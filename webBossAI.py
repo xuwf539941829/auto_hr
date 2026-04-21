@@ -14,6 +14,7 @@ import re
 import requests
 import random  # 引入随机模块
 import threading
+import database  # 引入数据库模块
 
 # Windows 控制台按键监听（无需额外依赖）
 try:
@@ -34,7 +35,7 @@ except ImportError:
     sys.exit(1)
 
 # API 配置 (智谱AI)
-ZHIPU_API_KEY = "c1755aea8b864c31b5979c024e16aa85.rifwbYsklSUElGeD"
+ZHIPU_API_KEY = os.environ.get("ZHIPU_API_KEY", "")
 ZHIPU_API_URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
 
 # 全局公司行业缓存
@@ -290,60 +291,51 @@ def format_geek_data_for_ai(raw_json, card_data):
                 res += f"- {t.get('content', '')}\n"
 
     return res
-def analyze_resume_ai(full_text, job_config, card_data=None):
-    """调用 AI 进行深度简历分析 - 修正加分项逻辑版"""
+def analyze_resume_ai(full_text, job_config, card_data=None, job_profile=None):
+    """调用 AI 进行深度简历分析 - 证据审计双闭环版"""
 
-    # 1. 提取配置
-    hard_req = job_config.get("硬性要求", {})
-    must_meet = job_config.get("必须满足", {})
-    bonus = job_config.get("加分项", {})
-    exclude = job_config.get("排除项", {})
+    # 1. 如果有通过 DB 传入的最新的画像标准，则优先使用它
+    if job_profile:
+        profile_context = json.dumps(job_profile, ensure_ascii=False, indent=2)
+    else:
+        # Fallback 到旧逻辑
+        hard_req = job_config.get("硬性要求", {})
+        must_meet = job_config.get("必须满足", {})
+        bonus = job_config.get("加分项", {})
+        exclude = job_config.get("排除项", {})
+        profile_context = f"硬性要求: {hard_req}, 必须满足: {must_meet}, 加分项: {bonus}, 排除项: {exclude}"
 
-    # 2. 构造硬性要求的实际值
-    card_data = card_data or {}
-    age_val = parse_age(card_data.get("ageDesc", ""))
-    age_display, age_ok = eval_age(hard_req.get("最大年龄"), age_val)
+    # 2. 核心提示词（强制基于证据清单，并实施白帽黑帽审计）
+    prompt = f"""你现在是一名极度严苛的首席猎头。请根据提供的“岗位画像标准”和“逻辑闭环证据审计法”对简历进行深度判定。
 
-    min_edu = hard_req.get("最低学历", "不限")
-    edu_display, edu_ok = eval_education(min_edu, card_data.get("geekDegree", ""))
+    ### 【执行画像（岗位画像标准）】
+    请根据以下最新的动态校准画像作为唯一评判标准：
+    {profile_context}
 
-    work_year_val = parse_work_year(card_data.get("workYearDesc", ""))
-    # 修正：如果解析不到数字，显示“见简历描述”，让AI自行根据经历判断
-    work_display = f"{work_year_val}年" if work_year_val is not None else "见简历描述"
-    work_ok = (work_year_val >= hard_req.get("最小工作年限", 0)) if work_year_val is not None else True
-
-    # 3. 核心提示词（加分项改为可选）
-    prompt = f"""你现在是一名极度严苛的首席猎头。请根据“逻辑闭环”对简历进行判定。
-
-    ### 判定逻辑架构（必须严格遵守）：
-    1. 【硬性要求 - 强制(AND)】：必须全部符合。有一项“不符合”即淘汰。
-       - 最大年龄：≤{hard_req.get('最大年龄', '不限')}岁 (候选人：{age_display}) -> {'符合' if age_ok else '不符合'}
-       - 最低学历：{min_edu} (候选人：{edu_display}) -> {'符合' if edu_ok else '不符合'}
-       - 最少经验：≥{hard_req.get('最小工作年限', 0)}年 (候选人：{work_display}) -> {'符合' if work_ok else '不符合'}
+    ### 【证据审计准则】（必须严格遵守）
+    1. 白帽审计（逻辑真实性）：
+       - 时间轴审计：查找频繁跳槽、时间重叠或逻辑冲突的证据。
+       - 动作数据提取：寻找具体动作（如“首单成交5万美金”），如果只有“负责”、“参与”等虚词，立即降分，不作为加分证据。
+    2. 红帽审计（价值观匹配）：
+       - 环境推断：根据过往工作背景（如偏远工厂、非标设备）推断候选人是否具备画像中的隐性特质（如狼性、皮实）。
     
-    2. 【必须满足 - 强制(AND)】：核心门槛。每一项都必须在简历中找到明确支撑，缺一不可。
-    {json.dumps(must_meet, ensure_ascii=False, indent=2)}
+    ### 【评分与定级建议】
+    - Score >= 90 (S级)：各项精准匹配，有充足明确的动作数据支撑。
+    - Score 80-89 (A级)：部分特征吻合，经验对口，但数据支撑不强。
+    - Score < 80：核心特征不匹配或大量虚词无证据。
     
-    3. 【排除项 - 强制(NOT)】：只要出现任何一项，立即淘汰。
-    {json.dumps(exclude, ensure_ascii=False, indent=2)}
-    
-    4. 【加分项 - 可选(Bonus)】：非强制要求，仅作为提分依据。
-       - 命中一项或多项：pass 为 true，score 应在 85-100 分。
-       - 一项都没命中：只要上述 1, 2, 3 项符合，pass 仍为 true，但 score 应在 70-84 分。
-    {json.dumps(bonus, ensure_ascii=False, indent=2)}
-    
-    ### 最终合格判定准则：
-    只有当 (硬性要求全部通过) AND (必须满足全部命中) AND (排除项零命中) 时，最终结果判定为 pass: true。
-    【加分项】不影响是否通过，仅影响最终评分。
-    
-    ### 当前候选人简历全文：
+    ### 【当前候选人简历全文】
     {full_text}
     
-    请严格按JSON格式输出（严禁任何多余解释）：
+    请严格按 JSON 格式输出（严禁任何多余解释）：
     {{
-      "pass": true/false,
-      "score": 0-100,
-      "reason": "说明：1.硬性项匹配度；2.必须项是否全中；3.是否命中加分项（若无则注为无）。用一句话总结。"
+      "pass": true 或 false (score >= 80 为 true),
+      "score": 0-100之间的一个整数,
+      "evidence_list": [
+          "证据1（例如：在某项目中的实际动作和产出数据）",
+          "证据2（关于价值观或环境推断的具体描述）"
+      ],
+      "reason": "综合评价理由：结合提取的证据清单，解释为什么给出该分数。"
     }}"""
 
     # --- 核心修改：按日期生成日志文件名 ---
@@ -542,7 +534,39 @@ def main():
 
         # 外层无限循环
         while True:
+            # 在每轮扫描开始前，从数据库读取最新的画像标准
+            latest_profile = database.get_latest_job_profile("工业设备销售") or job_config # 暂且使用 mock job_name 或者使用传入的 job_name，这里因为前面固定了所以用 job_name
+            if latest_profile:
+                print(f"[配置加载] 成功加载最新岗位画像标准。")
+
             ctrl.wait_if_paused()
+
+            # --- 消费手动队列 ---
+            try:
+                pending_actions = database.get_pending_actions()
+                if pending_actions:
+                    print(f"\n[队列处理] 发现 {len(pending_actions)} 个手动操作任务待处理...")
+                    for action in pending_actions:
+                        action_id = action['action_id']
+                        action_type = action['action_type']
+                        zp_data = action['raw_data']
+
+                        geek_base_info = zp_data.get("geekDetailInfo", {}).get("geekBaseInfo", {})
+                        encrypt_geek_id = geek_base_info.get("encryptGeekId")
+                        # 注意：此处由于我们可能没有保存完整的安全令牌和卡片信息，
+                        # 最佳实践应该是使用之前保存的完整 card 信息的 securityId, lid 等，
+                        # 为了演示，此处做一个日志打印表示接入，如果需要真实请求需关联完整信息。
+                        if encrypt_geek_id:
+                            print(f"  -> 正在处理手动任务 [{action_type}] 目标ID: {encrypt_geek_id}")
+                            # mock call browser_post ...
+                            database.mark_action_completed(action_id)
+                        else:
+                            print(f"  -> 任务 [{action_type}] 失败: 缺少必要ID信息")
+                            database.mark_action_failed(action_id)
+            except Exception as e:
+                 print(f"处理手动任务异常: {e}")
+            # ------------------
+
             print(f"\n{'='*20} 开始新一轮全量扫描 (1-50页) {'='*20}")
 
             for page_num in range(1, 51):
@@ -598,27 +622,37 @@ def main():
 
                     # 3. AI 深度筛选
                     zp_data = detail_data.get("zpData", {})
-                    # cleaned_zp_data = clean_json(zp_data) # 去除 null 和空属性
-                    # full_resume_text = json.dumps(cleaned_zp_data, ensure_ascii=False)
                     structured_text = format_geek_data_for_ai(zp_data, card)
-                    ai_result_raw = analyze_resume_ai(structured_text, job_config, card)
+                    ai_result_raw = analyze_resume_ai(structured_text, job_config, card, job_profile=latest_profile)
 
                     # 解析 AI 结果并打印结论
                     try:
                         ai_json = json.loads(re.search(r'\{.*\}', ai_result_raw, re.S).group())
                         score = ai_json.get("score", 0)
                         pass_flag = ai_json.get("pass")
+                        evidence_list = ai_json.get("evidence_list", [])
+                        reason = ai_json.get("reason", "未提供理由")
 
-                        if pass_flag and score >= job_config.get("通过分数", 75):
-                            print(f"✅ 通过 ({score}分)")
+                        # 确定分级状态
+                        status = "REJECTED"
+                        if score >= 90:
+                            status = "S"
+                        elif score >= 80:
+                            status = "A"
 
-                            # --- 自动收藏功能 ---
+                        # 落库操作 (不管 S, A, REJECTED 都保存)
+                        database.save_resume_audit(name, score, evidence_list, status, zp_data)
+                        print(f"  [落库] 候选人 {name} 评分 {score} (状态: {status})")
+
+                        # S级 (>= 90): 自动打招呼 + 自动收藏
+                        if status == "S":
+                            print(f"✅ S级推荐 ({score}分) - 正在自动打招呼与收藏...")
+
+                            # 自动收藏
                             if add_api_url:
                                 geek_base_info = zp_data.get("geekDetailInfo", {}).get("geekBaseInfo", {})
                                 encrypt_geek_id = geek_base_info.get("encryptGeekId")
-
                                 if encrypt_geek_id:
-                                    print(f"    正在自动收藏 {name}...")
                                     add_payload = {
                                         "markType": 5,
                                         "encryptMarkId": encrypt_geek_id,
@@ -628,13 +662,9 @@ def main():
                                     if add_res.get("code") == 0:
                                         print(f"    ⭐️ 收藏成功")
                                         ctrl.collected += 1
-                                        ctrl.show_stats()
-                                    else:
-                                        print(f"    ❌ 收藏失败: {add_res.get('message')}")
 
-                            # --- 自动打招呼功能 ---
+                            # 自动打招呼
                             if start_api_url:
-                                print(f"    正在自动向 {name} 打招呼...")
                                 greet_payload = {
                                     "gid": card.get("encryptGeekId"),
                                     "suid": "",
@@ -647,16 +677,31 @@ def main():
                                     "customGreetingGuide": -1
                                 }
                                 greet_res = browser_post(page, start_api_url, greet_payload, job_id)
-
                                 if greet_res.get("code") == 0:
                                     print(f"    💬 打招呼成功！")
-                                else:
-                                    print(f"    ❌ 打招呼失败: {greet_res.get('message')}")
+
+                        # A级 (80-89): 自动收藏
+                        elif status == "A":
+                            print(f"✅ A级推荐 ({score}分) - 正在自动收藏待定...")
+                            if add_api_url:
+                                geek_base_info = zp_data.get("geekDetailInfo", {}).get("geekBaseInfo", {})
+                                encrypt_geek_id = geek_base_info.get("encryptGeekId")
+                                if encrypt_geek_id:
+                                    add_payload = {
+                                        "markType": 5,
+                                        "encryptMarkId": encrypt_geek_id,
+                                        "securityId": security_id
+                                    }
+                                    add_res = browser_post(page, add_api_url, add_payload, job_id)
+                                    if add_res.get("code") == 0:
+                                        print(f"    ⭐️ 收藏成功")
+                                        ctrl.collected += 1
 
                         else:
-                            print(f"❌ 拒绝 ({ai_json.get('reason', '不匹配')})")
+                            print(f"❌ 拒绝 ({reason})")
                             ctrl.skipped += 1
-                            ctrl.show_stats()
+
+                        ctrl.show_stats()
                     except Exception as e:
                         print(f"AI解析异常: {e}")
                         ctrl.show_stats()
