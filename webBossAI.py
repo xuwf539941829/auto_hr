@@ -21,6 +21,12 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
 
+# Windows 控制台按键监听（无需额外依赖）
+try:
+    import msvcrt  # type: ignore
+except ImportError:
+    msvcrt = None
+
 # 尝试导入 playwright
 try:
     from playwright.sync_api import sync_playwright
