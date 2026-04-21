@@ -16,7 +16,19 @@ if latest and latest.get("测试项") == "测试数据":
 else:
     print("❌ JobProfile 读写失败")
 
-print("3. 测试保存和读取 ResumeAudit...")
+print("3. 测试保存和读取 OnlineJob...")
+mock_jobs = [
+    {"encryptJobId": "mock_id_123", "jobName": "测试高级工程师", "jobOnlineStatus": 1},
+    {"encryptJobId": "mock_id_456", "jobName": "测试产品经理", "jobOnlineStatus": 0}
+]
+database.save_online_jobs(mock_jobs)
+online_jobs = database.get_online_jobs()
+if len(online_jobs) >= 2 and any(j['job_name'] == "测试高级工程师" for j in online_jobs):
+    print("✅ OnlineJob 读写正常")
+else:
+    print("❌ OnlineJob 读写失败")
+
+print("4. 测试保存和读取 ResumeAudit...")
 evidence = ["第一份工作的业绩：2023年完成指标150%", "沟通能力强"]
 database.save_resume_audit("张三", 95, evidence, "S", {"学历": "本科"})
 

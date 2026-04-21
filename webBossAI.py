@@ -35,8 +35,17 @@ except ImportError:
     sys.exit(1)
 
 # API 配置 (智谱AI)
-ZHIPU_API_KEY = os.environ.get("ZHIPU_API_KEY", "")
 ZHIPU_API_URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+
+def get_zhipu_key():
+    try:
+        with open("config.json", "r", encoding="utf-8") as f:
+            config_data = json.load(f)
+            return config_data.get("ZHIPU_API_KEY", "")
+    except Exception:
+        return ""
+
+ZHIPU_API_KEY = get_zhipu_key()
 
 # 全局公司行业缓存
 _company_industry_cache = {}
@@ -467,20 +476,30 @@ def main():
     default_job_from_config = config.get("default_job", "售后工程师")
 
     parser = argparse.ArgumentParser(description='BOSS直聘 WAPI 自动化助手')
-    parser.add_argument('--job', type=str, default=default_job_from_config, help='岗位名称')
     parser.add_argument('--mode', type=str, default="rec", choices=['rec', 'new'], help='rec:推荐列表, new:最新列表')
     args = parser.parse_args()
 
-    job_name = args.job
-    if job_name not in config["jobs"]:
-        print(f"未找到岗位配置: {job_name}")
-        return
+    # 移除过时的硬编码配置校验，改为动态获取
+    job_config = {}
 
-    job_config = config["jobs"][job_name]
-    job_id = job_config["jobId"]
     detail_api_base = config["boss_api_resume_detail"]
     add_api_url = config.get("boss_api_resume_add") # 从配置读取收藏接口
     start_api_url = config.get("boss_api_resume_start")  # 打招呼接口
+
+    def sync_online_jobs_to_db(page_obj):
+        """拉取在线职位列表并同步到数据库，返回可用职位列表"""
+        print(f"正在同步线上岗位列表...")
+        job_list_url = "https://www.zhipin.com/wapi/zpjob/job/chatted/jobList"
+        res = browser_fetch(page_obj, job_list_url)
+        online_jobs = []
+        if res and res.get("code") == 0:
+            online_jobs = res.get("zpData", [])
+            if online_jobs:
+                database.save_online_jobs(online_jobs)
+                print(f"✅ 成功同步 {len(online_jobs)} 个线上岗位到本地数据库。")
+        else:
+            print(f"❌ 拉取线上职位失败: {res}")
+        return online_jobs
 
     with sync_playwright() as p:
         print(f"正在连接已打开的 Chrome (9222端口)...")
@@ -492,41 +511,6 @@ def main():
             print(f"无法连接浏览器: {e}")
             return
 
-        # --- 核心修改：从线上接口动态匹配 JobId ---
-        print(f"正在同步线上岗位列表...")
-        job_list_url = "https://www.zhipin.com/wapi/zpjob/job/chatted/jobList"
-        job_list_res = browser_fetch(page, job_list_url)
-        print(job_list_res)
-
-        found_job_id = None
-        if job_list_res and job_list_res.get("code") == 0:
-            online_jobs = job_list_res.get("zpData", [])
-            # 优先寻找包含关键字且在线的岗位
-            for job_item in online_jobs:
-                on_name = job_item.get("jobName", "")
-                if job_name in on_name and job_item.get("jobOnlineStatus") == 1:
-                    found_job_id = job_item.get("encryptJobId")
-                    print(f"✅ 匹配成功(在线): {on_name} -> ID: {found_job_id}")
-                    break
-            # 备份：寻找包含关键字的岗位(不论状态)
-            if not found_job_id:
-                for job_item in online_jobs:
-                    on_name = job_item.get("jobName", "")
-                    if job_name in on_name:
-                        found_job_id = job_item.get("encryptJobId")
-                        print(f"⚠️ 匹配到已关闭/异常岗位: {on_name} -> ID: {found_job_id}")
-                        break
-
-        if not found_job_id:
-            available = [j.get("jobName") for j in job_list_res.get("zpData", [])]
-            print(f"❌ 匹配失败：线上岗位中没有包含 '{job_name}' 的职位。")
-            print(f"当前线上可用岗位：{available}")
-            return
-
-        job_id = found_job_id
-        # --------------------------------------------
-
-        print(f"开始执行: {job_name} | 模式: {'推荐' if args.mode=='rec' else '最新'}")
         ctrl = RuntimeControl()
         start_key_listener(ctrl)
         print("[键盘控制] 按 P 暂停，按 S 继续运行。")
@@ -534,12 +518,43 @@ def main():
 
         # 外层无限循环
         while True:
-            # 在每轮扫描开始前，从数据库读取最新的画像标准
-            latest_profile = database.get_latest_job_profile("工业设备销售") or job_config # 暂且使用 mock job_name 或者使用传入的 job_name，这里因为前面固定了所以用 job_name
-            if latest_profile:
-                print(f"[配置加载] 成功加载最新岗位画像标准。")
-
             ctrl.wait_if_paused()
+            print(f"\n{'='*20} 开始新一轮环境同步与任务检测 {'='*20}")
+
+            # 第一步：同步线上职位，确保 UI 有最新数据可选
+            online_jobs_cache = sync_online_jobs_to_db(page)
+
+            # 第二步：从数据库读取用户最近校准的画像和目标岗位
+            conn = database.get_connection()
+            cursor = conn.cursor()
+            cursor.execute('SELECT job_name, profile_json FROM JobProfile ORDER BY updated_at DESC LIMIT 1')
+            row = cursor.fetchone()
+            conn.close()
+
+            if not row:
+                print("⚠️ 数据库中尚未发现岗位画像。请先在 Web UI 页面选择岗位并进行第一步的 JD 解析。")
+                print("⏳ 等待 15 秒后重试...")
+                sleep_interruptible(ctrl, 15)
+                continue
+
+            job_name = row[0]
+            latest_profile = json.loads(row[1])
+            print(f"[任务获取] 读取到最新绑定岗位: {job_name}，已加载其画像标准。")
+
+            # 第三步：利用 job_name 从刚才的在线列表中寻找 job_id
+            job_id = None
+            for job_item in online_jobs_cache:
+                if job_name in job_item.get("jobName", ""):
+                    job_id = job_item.get("encryptJobId")
+                    break
+
+            if not job_id:
+                print(f"❌ 错误：在当前线上岗位中未找到名为 '{job_name}' 的职位ID，无法发起请求。")
+                print("请确保 Web UI 中选择的职位目前仍在 Boss 直聘上。等待 15 秒后重试...")
+                sleep_interruptible(ctrl, 15)
+                continue
+
+            print(f"✅ 准备就绪: 将为 {job_name} (ID: {job_id}) 扫描简历。模式: {'推荐' if args.mode=='rec' else '最新'}")
 
             # --- 消费手动队列 ---
             try:

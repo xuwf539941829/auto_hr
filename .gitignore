@@ -19,3 +19,4 @@ venv.bak/
 
 # Streamlit
 .streamlit/
+config.json
