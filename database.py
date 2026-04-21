@@ -45,6 +45,17 @@ def init_db():
         )
     ''')
 
+    # 创建 OnlineJob 表以缓存线上的招聘职位
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS OnlineJob (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id TEXT NOT NULL UNIQUE,
+            job_name TEXT NOT NULL,
+            status INTEGER,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
     conn.commit()
     conn.close()
 
@@ -153,6 +164,49 @@ def mark_action_completed(action_id):
     ''', (action_id,))
     conn.commit()
     conn.close()
+
+def save_online_jobs(jobs_list):
+    """
+    保存或更新从 Boss 接口拉取到的线上职位列表。
+    jobs_list 结构类似于: [{"encryptJobId": "...", "jobName": "...", "jobOnlineStatus": 1}, ...]
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    for job in jobs_list:
+        jid = job.get("encryptJobId")
+        jname = job.get("jobName", "未知职位")
+        jstatus = job.get("jobOnlineStatus", 0)
+        if not jid:
+            continue
+        cursor.execute('''
+            INSERT INTO OnlineJob (job_id, job_name, status, updated_at)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(job_id) DO UPDATE SET
+                job_name=excluded.job_name,
+                status=excluded.status,
+                updated_at=CURRENT_TIMESTAMP
+        ''', (jid, jname, jstatus))
+    conn.commit()
+    conn.close()
+
+def get_online_jobs():
+    """获取所有线上职位列表，返回 dict 列表"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT job_id, job_name, status FROM OnlineJob ORDER BY updated_at DESC
+    ''')
+    rows = cursor.fetchall()
+    conn.close()
+
+    jobs = []
+    for row in rows:
+        jobs.append({
+            "job_id": row[0],
+            "job_name": row[1],
+            "status": row[2]
+        })
+    return jobs
 
 def mark_action_failed(action_id):
     conn = get_connection()

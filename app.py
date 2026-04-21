@@ -9,8 +9,23 @@ st.title("基于“画像对齐-证据审计”的双闭环 AI 招聘专家系�
 # 初始化数据库
 database.init_db()
 
-# --- 阶段 1：JD 录入与 AI 深度转译 ---
-st.header("阶段 1：JD 深度转译（画像初建）")
+# --- 阶段 1：选择/输入职位名称 ---
+st.header("阶段 1：选择待招聘的线上职位")
+st.info("说明：由于我们需要绑定真实的线上职位进行抓取，所以这里必须从 Boss 账号下的已有职位中进行选择。\n\n**如何拉取职位？** 请在终端运行 `start.sh` 或 `python webBossAI.py`，爬虫启动时会自动同步您账号下的在线职位到此列表中。")
+
+if st.button("刷新在线职位列表"):
+    st.rerun()
+
+online_jobs = database.get_online_jobs()
+if not online_jobs:
+    st.warning("暂未获取到线上职位信息，请先确保后台爬虫进程运行过一次以同步职位列表。")
+    st.stop()
+
+job_names = [job['job_name'] for job in online_jobs]
+job_name_input = st.selectbox("请选择要进行画像校准的职位：", job_names)
+
+# --- 阶段 2：JD 录入与 AI 深度转译 ---
+st.header("阶段 2：输入 JD 进行画像初建")
 
 default_jd = """岗位要求：
 1. 本科及以上学历，机械、自动化相关专业；
@@ -24,15 +39,27 @@ if 'profile' not in st.session_state:
     st.session_state.profile = None
 
 if st.button("AI 深度转译 (生成画像初稿)"):
+    if not job_name_input:
+        st.error("请先在上面输入职位名称！")
+        st.stop()
     st.info("正在调用 AI 分析 JD...")
     import requests
     import re
     import os
+    import json
 
-    # 从环境变量中读取 ZHIPU_API_KEY，避免硬编码泄露风险
-    ZHIPU_API_KEY = os.environ.get("ZHIPU_API_KEY", "")
+    # 从 config.json 中读取 ZHIPU_API_KEY
+    ZHIPU_API_KEY = ""
+    try:
+        with open("config.json", "r", encoding="utf-8") as f:
+            config_data = json.load(f)
+            ZHIPU_API_KEY = config_data.get("ZHIPU_API_KEY", "")
+    except Exception as e:
+        st.error(f"读取 config.json 失败: {e}")
+        st.stop()
+
     if not ZHIPU_API_KEY:
-        st.error("未配置 ZHIPU_API_KEY 环境变量，请在运行环境中设置。")
+        st.error("未在 config.json 中配置 ZHIPU_API_KEY。")
         st.stop()
 
     ZHIPU_API_URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
@@ -125,8 +152,8 @@ if st.session_state.profile is not None:
         st.success("更新成功！最终执行画像已锁定。")
 
         # 将最新的画像保存到 DB
-        database.save_job_profile("工业设备销售", st.session_state.profile)
-        st.info("画像已保存到数据库 (JobProfile)，扫描引擎将按此标准执行。")
+        database.save_job_profile(job_name_input, st.session_state.profile)
+        st.info(f"[{job_name_input}] 画像已保存到数据库 (JobProfile)，扫描引擎将按此标准执行。")
 
 # --- 阶段 3 & 4：简历评审墙与人工复核闭环 ---
 st.header("阶段 3 & 4：简历评审与证据审计闭环")
@@ -183,5 +210,5 @@ else:
                 # Mock 反馈更新过程
                 if st.session_state.profile:
                      st.session_state.profile["负面教训"] = st.session_state.profile.get("负面教训", []) + [reason]
-                     database.save_job_profile("工业设备销售", st.session_state.profile)
+                     database.save_job_profile(job_name_input, st.session_state.profile)
                      st.info("已记录反馈并生成新的画像标准，下一轮抓取直接生效！")
