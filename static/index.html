@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI 招聘专家系统</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 min-h-screen text-gray-800">
+
+<div class="max-w-5xl mx-auto py-8 px-4">
+    <h1 class="text-3xl font-bold mb-8 text-center">基于“画像对齐-证据审计”的双闭环 AI 招聘专家系统</h1>
+
+    <!-- 阶段 1：职位选择 -->
+    <div class="bg-white p-6 rounded-lg shadow-md mb-8">
+        <h2 class="text-xl font-semibold mb-4 text-blue-600">阶段 1：选择待招聘的线上职位</h2>
+        <p class="text-sm text-gray-500 mb-4">
+            说明：请在终端按任意键启动爬虫后，点击下方按钮拉取在线职位。必须绑定已有的在线职位，系统才能开始工作。
+        </p>
+
+        <div class="flex items-center gap-4 mb-4">
+            <button id="btnSyncJobs" class="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded">
+                触发拉取在线职位
+            </button>
+            <button id="btnLoadJobs" class="bg-gray-200 hover:bg-gray-300 text-gray-700 px-4 py-2 rounded">
+                刷新并显示已拉取职位
+            </button>
+        </div>
+
+        <div class="flex items-center gap-4">
+            <label for="jobSelect" class="font-medium">请选择职位：</label>
+            <select id="jobSelect" class="border p-2 rounded flex-1">
+                <option value="">请先拉取并刷新职位...</option>
+            </select>
+        </div>
+    </div>
+
+    <!-- 阶段 2：JD 录入 -->
+    <div class="bg-white p-6 rounded-lg shadow-md mb-8">
+        <h2 class="text-xl font-semibold mb-4 text-blue-600">阶段 2：输入 JD 进行画像初建</h2>
+        <textarea id="jdInput" rows="6" class="w-full border p-3 rounded mb-4 focus:outline-none focus:border-blue-500" placeholder="请输入原始 JD 文本...">岗位要求：
+1. 本科及以上学历，机械、自动化相关专业；
+2. 5年以上大B端设备销售经验；
+3. 具备极强的狼性和抗压能力；
+4. 沟通能力强，适应长期出差。</textarea>
+
+        <button id="btnGenerateProfile" class="w-full bg-green-500 hover:bg-green-600 text-white px-4 py-3 rounded font-medium text-lg">
+            AI 深度转译 (生成画像初稿)
+        </button>
+
+        <div id="profileResult" class="mt-4 p-4 bg-gray-50 rounded hidden overflow-auto max-h-64 text-sm">
+            <!-- 画像 JSON 将展示在这里 -->
+        </div>
+    </div>
+    <!-- 阶段 3 & 4：简历墙 -->
+    <div class="bg-white p-6 rounded-lg shadow-md">
+        <div class="flex justify-between items-center mb-4">
+            <h2 class="text-xl font-semibold text-blue-600">阶段 3 & 4：简历池与证据审计墙</h2>
+            <button id="btnLoadResumes" class="bg-indigo-500 hover:bg-indigo-600 text-white px-4 py-2 rounded">
+                刷新简历池
+            </button>
+        </div>
+
+        <div class="mb-4">
+            <label class="font-medium mr-2">按等级筛选:</label>
+            <select id="resumeFilter" class="border p-2 rounded">
+                <option value="ALL">全部</option>
+                <option value="S">S 级 (≥90分)</option>
+                <option value="A">A 级 (80-89分)</option>
+                <option value="REJECTED">淘汰 (<80分)</option>
+            </select>
+        </div>
+
+        <div id="resumeWall" class="space-y-4">
+            <div class="text-gray-500 italic">点击右上角按钮刷新简历池...</div>
+        </div>
+    </div>
+</div>
+
+<script>
+    // --- 简历墙逻辑 ---
+    async function loadResumes() {
+        try {
+            const res = await fetch('/api/resumes');
+            const data = await res.json();
+            const wall = document.getElementById('resumeWall');
+            wall.innerHTML = '';
+
+            if (data.data && data.data.length > 0) {
+                window.allResumes = data.data; // 缓存供筛选使用
+                renderResumes();
+            } else {
+                wall.innerHTML = '<div class="text-gray-500 italic">暂无被扫描入库的简历数据。</div>';
+            }
+        } catch (e) {
+            alert('加载简历池失败');
+        }
+    }
+
+    function renderResumes() {
+        if (!window.allResumes) return;
+        const filter = document.getElementById('resumeFilter').value;
+        const wall = document.getElementById('resumeWall');
+        wall.innerHTML = '';
+
+        let count = 0;
+        window.allResumes.forEach(r => {
+            if (filter !== 'ALL' && r.status !== filter) return;
+            count++;
+
+            const badgeColor = r.status === 'S' ? 'bg-red-500' : (r.status === 'A' ? 'bg-orange-500' : 'bg-gray-400');
+
+            let evidenceHtml = '<ul class="list-disc ml-5 mt-2 text-sm text-gray-700">';
+            if (r.evidence_list && r.evidence_list.length > 0) {
+                r.evidence_list.forEach(e => { evidenceHtml += `<li>${e}</li>`; });
+            } else {
+                evidenceHtml += '<li>未提取到明确动作证据。</li>';
+            }
+            evidenceHtml += '</ul>';
+
+            const cardHtml = `
+                <div class="border rounded p-4">
+                    <div class="flex justify-between items-center border-b pb-2 mb-2">
+                        <div class="font-bold text-lg">
+                            <span class="${badgeColor} text-white px-2 py-1 rounded text-sm mr-2">${r.status}</span>
+                            ${r.name}
+                        </div>
+                        <div class="text-xl font-bold text-blue-600">${r.score} 分</div>
+                    </div>
+                    <div class="mb-3">
+                        <span class="font-medium text-sm text-gray-800">证据清单 (AI 审计):</span>
+                        ${evidenceHtml}
+                    </div>
+                    <div class="flex gap-2">
+                        <button onclick="postAction(${r.id}, 'greet')" class="text-sm bg-blue-100 text-blue-700 hover:bg-blue-200 px-3 py-1 rounded border border-blue-300">人工强制打招呼</button>
+                        <button onclick="postAction(${r.id}, 'collect')" class="text-sm bg-green-100 text-green-700 hover:bg-green-200 px-3 py-1 rounded border border-green-300">人工强制收藏</button>
+                    </div>
+                </div>
+            `;
+            wall.innerHTML += cardHtml;
+        });
+
+        if (count === 0) {
+            wall.innerHTML = `<div class="text-gray-500 italic">在筛选条件 '${filter}' 下暂无简历。</div>`;
+        }
+    }
+
+    document.getElementById('btnLoadResumes').addEventListener('click', loadResumes);
+    document.getElementById('resumeFilter').addEventListener('change', renderResumes);
+
+    async function postAction(resumeId, actionType) {
+        try {
+            const res = await fetch('/api/action', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ resume_id: resumeId, action_type: actionType })
+            });
+            const data = await res.json();
+            if (data.code === 0) {
+                alert(`已成功将 [${actionType}] 指令下发到后台执行队列！`);
+            } else {
+                alert('指令下发失败');
+            }
+        } catch(e) {
+            alert('网络请求失败');
+        }
+    }
+
+    // 阶段 1：同步与加载职位
+    document.getElementById('btnSyncJobs').addEventListener('click', async () => {
+        const btn = document.getElementById('btnSyncJobs');
+        btn.innerText = "已向后台下达同步指令...";
+        btn.disabled = true;
+        try {
+            await fetch('/api/sync_jobs');
+            alert('同步指令已发送。请等待几秒钟让后台 Playwright 爬虫获取数据，然后点击右侧刷新按钮。');
+        } catch (e) {
+            alert('发送同步指令失败');
+        }
+        btn.innerText = "触发拉取在线职位";
+        btn.disabled = false;
+    });
+
+    document.getElementById('btnLoadJobs').addEventListener('click', async () => {
+        try {
+            const res = await fetch('/api/jobs');
+            const data = await res.json();
+            const select = document.getElementById('jobSelect');
+            select.innerHTML = '';
+            if (data.data && data.data.length > 0) {
+                data.data.forEach(job => {
+                    const option = document.createElement('option');
+                    option.value = job.job_name;
+                    option.text = job.job_name;
+                    select.appendChild(option);
+                });
+                alert('获取到 ' + data.data.length + ' 个职位！');
+            } else {
+                select.innerHTML = '<option value="">暂无数据，请稍后再试...</option>';
+            }
+        } catch (e) {
+            alert('加载职位失败');
+        }
+    });
+
+    // 阶段 2：生成画像
+    document.getElementById('btnGenerateProfile').addEventListener('click', async () => {
+        const jobName = document.getElementById('jobSelect').value;
+        const jdText = document.getElementById('jdInput').value;
+
+        if (!jobName) {
+            alert('请先选择一个线上职位！');
+            return;
+        }
+        if (!jdText) {
+            alert('请输入 JD 文本！');
+            return;
+        }
+
+        const btn = document.getElementById('btnGenerateProfile');
+        btn.innerText = "正在调用智谱 AI 生成中...";
+        btn.disabled = true;
+
+        try {
+            const res = await fetch('/api/profile', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ job_name: jobName, jd_text: jdText })
+            });
+            const data = await res.json();
+            if (data.code === 0) {
+                const resDiv = document.getElementById('profileResult');
+                resDiv.classList.remove('hidden');
+                resDiv.innerHTML = '<pre>' + JSON.stringify(data.data, null, 2) + '</pre>';
+                alert('画像已生成并自动保存，后台引擎将开始据此筛选简历！');
+            } else {
+                alert('生成失败: ' + (data.detail || data.msg));
+            }
+        } catch (e) {
+            alert('请求发生错误');
+        }
+        btn.innerText = "AI 深度转译 (生成画像初稿)";
+        btn.disabled = false;
+    });
+</script>
+
+</body>
+</html>

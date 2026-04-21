@@ -37,16 +37,14 @@ start "" !CHROME_EXE! --remote-debugging-port=9222 --user-data-dir=!DATA_DIR! "h
 echo.
 echo [提示] 调试浏览器已打开。
 echo [提示] 请在【该新窗口】中完成 BOSS 扫码登录。
-echo [提示] 登录完成后，回到这里按任意键开启 AI 引擎。
-pause
 
 echo ======================================================
-echo           第三步：启动 AI 招聘引擎
+echo           第三步：启动后台 API 服务与自动引擎
 echo ======================================================
-python webBossAI.py
 
-if !errorlevel! neq 0 (
-    echo.
-    echo [!!!] AI 引擎运行中断。
-)
+:: 启动 FastAPI 服务。此时它会自动连接 Playwright，同步后自己利用 webbrowser 打开网页。
+uvicorn webBossAI:app --port 8000
+
+echo.
+echo [状态] AI 引擎退出。
 pause

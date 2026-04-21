@@ -1,47 +1,44 @@
+from fastapi.testclient import TestClient
+from webBossAI import app
 import database
+
+# Use TestClient to test the FastAPI app endpoints
+client = TestClient(app)
 
 print("1. 测试数据库连通性...")
 database.init_db()
 
-print("2. 测试保存和读取 JobProfile...")
-profile_mock = {
-    "测试项": "测试数据",
-    "负面教训": ["太远了", "不要没有工作经验的"]
-}
-database.save_job_profile("测试岗位", profile_mock)
-
-latest = database.get_latest_job_profile("测试岗位")
-if latest and latest.get("测试项") == "测试数据":
-    print("✅ JobProfile 读写正常")
+print("2. 测试 GET /api/jobs ...")
+# 预置假数据
+database.save_online_jobs([{"encryptJobId": "test_1", "jobName": "FastAPI_Job", "jobOnlineStatus": 1}])
+response = client.get("/api/jobs")
+if response.status_code == 200 and any(j["job_name"] == "FastAPI_Job" for j in response.json().get("data", [])):
+    print("✅ /api/jobs 返回正常")
 else:
-    print("❌ JobProfile 读写失败")
+    print("❌ /api/jobs 返回异常")
 
-print("3. 测试保存和读取 OnlineJob...")
-mock_jobs = [
-    {"encryptJobId": "mock_id_123", "jobName": "测试高级工程师", "jobOnlineStatus": 1},
-    {"encryptJobId": "mock_id_456", "jobName": "测试产品经理", "jobOnlineStatus": 0}
-]
-database.save_online_jobs(mock_jobs)
-online_jobs = database.get_online_jobs()
-if len(online_jobs) >= 2 and any(j['job_name'] == "测试高级工程师" for j in online_jobs):
-    print("✅ OnlineJob 读写正常")
-else:
-    print("❌ OnlineJob 读写失败")
-
-print("4. 测试保存和读取 ResumeAudit...")
+print("3. 测试 GET /api/resumes ...")
 evidence = ["第一份工作的业绩：2023年完成指标150%", "沟通能力强"]
-database.save_resume_audit("张三", 95, evidence, "S", {"学历": "本科"})
-
-resumes = database.get_all_resumes()
-found = False
-for r in resumes:
-    if r['name'] == "张三" and r['score'] == 95 and r['status'] == "S":
-        found = True
-        break
-
-if found:
-     print("✅ ResumeAudit 读写正常")
+database.save_resume_audit("FastAPI_Candidate", 95, evidence, "S", {"学历": "本科"})
+response = client.get("/api/resumes")
+if response.status_code == 200 and any(r["name"] == "FastAPI_Candidate" for r in response.json().get("data", [])):
+     print("✅ /api/resumes 返回正常")
 else:
-     print("❌ ResumeAudit 读写失败")
+     print("❌ /api/resumes 返回异常")
+
+print("4. 测试 POST /api/action ...")
+# 先获取刚才插入的简历 ID
+resumes = database.get_all_resumes()
+test_id = next(r["id"] for r in resumes if r["name"] == "FastAPI_Candidate")
+response = client.post("/api/action", json={"resume_id": test_id, "action_type": "greet"})
+if response.status_code == 200 and response.json().get("code") == 0:
+    # 验证是否存入了 ManualActionQueue
+    pending = database.get_pending_actions()
+    if any(a["resume_id"] == test_id and a["action_type"] == "greet" for a in pending):
+        print("✅ /api/action 处理与队列下发正常")
+    else:
+        print("❌ /api/action 写入队列失败")
+else:
+    print("❌ /api/action 返回异常")
 
 print("测试完成。")

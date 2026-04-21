@@ -15,17 +15,11 @@ import requests
 import random  # 引入随机模块
 import threading
 import database  # 引入数据库模块
-
-# Windows 控制台按键监听（无需额外依赖）
-try:
-    import msvcrt  # type: ignore
-except ImportError:
-    msvcrt = None
-
-try:
-    import ctypes
-except ImportError:
-    ctypes = None
+import asyncio
+from fastapi import FastAPI, BackgroundTasks, HTTPException
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+from contextlib import asynccontextmanager
 
 # 尝试导入 playwright
 try:
@@ -36,6 +30,116 @@ except ImportError:
 
 # API 配置 (智谱AI)
 ZHIPU_API_URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+
+# --- FastAPI App 实例 ---
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 确保数据库表被正确初始化
+    database.init_db()
+    # 启动应用时，后台开启 Playwright Worker 线程
+    worker_thread = threading.Thread(target=playwright_worker_loop, daemon=True)
+    worker_thread.start()
+    yield
+    # 关闭应用时，可以做一些清理
+    pass
+
+app = FastAPI(lifespan=lifespan)
+# 挂载静态文件用于提供前端 UI
+app.mount("/ui", StaticFiles(directory="static", html=True), name="static")
+
+# --- FastAPI REST 接口 ---
+@app.get("/api/sync_jobs")
+def api_sync_jobs():
+    """触发一次后台 Worker 的状态同步（将在线职位拉取写入数据库）"""
+    trigger_worker_sync()
+    return {"code": 0, "msg": "Sync triggered"}
+
+@app.get("/api/jobs")
+def api_get_jobs():
+    """获取目前本地数据库缓存的在线职位"""
+    jobs = database.get_online_jobs()
+    return {"code": 0, "data": jobs}
+
+class ProfileRequest(BaseModel):
+    job_name: str
+    jd_text: str
+
+@app.post("/api/profile")
+def api_generate_profile(req: ProfileRequest):
+    """调用大模型转译 JD 并保存到数据库"""
+    if not req.jd_text or not req.job_name:
+        raise HTTPException(status_code=400, detail="Missing jd_text or job_name")
+
+    prompt = f"""
+    请作为首席招聘官，将以下口语化的 JD 转译为严谨的“胜任力逻辑模型”。
+    请严格按以下 JSON 格式输出，不要有其他废话：
+    {{
+        "岗位角色": "例如：工业设备销售",
+        "显性要求": {{
+            "最低学历": "例如：本科",
+            "专业要求": ["例如：机械", "自动化"],
+            "最小工作年限": 5
+        }},
+        "隐性要求": {{
+            "特质要求1": "详细说明，如 狼性/抗压",
+            "特质要求2": "如 大B端能力"
+        }},
+        "加分经验": ["经验1", "经验2"],
+        "核心关注点权重": {{
+            "学历": 10,
+            "经验": 40,
+            "特质要求1": 30,
+            "特质要求2": 20
+        }}
+    }}
+
+    原始 JD：
+    {req.jd_text}
+    """
+
+    headers = {
+        "Authorization": f"Bearer {ZHIPU_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    data = {
+        "model": "glm-4-flash",
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.1
+    }
+
+    try:
+        response = requests.post(ZHIPU_API_URL, headers=headers, json=data, timeout=15)
+        if response.status_code == 200:
+            content = response.json()["choices"][0]["message"]["content"]
+            json_match = re.search(r'\{.*\}', content, re.S)
+            if json_match:
+                ai_result = json.loads(json_match.group())
+                database.save_job_profile(req.job_name, ai_result)
+                return {"code": 0, "data": ai_result}
+            else:
+                raise HTTPException(status_code=500, detail="AI JSON Parsing failed")
+        else:
+            raise HTTPException(status_code=500, detail=f"AI API failed with {response.status_code}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/resumes")
+def api_get_resumes():
+    """获取扫描入库的候选人列表"""
+    resumes = database.get_all_resumes()
+    return {"code": 0, "data": resumes}
+
+class ActionRequest(BaseModel):
+    resume_id: int
+    action_type: str
+
+@app.post("/api/action")
+def api_post_action(req: ActionRequest):
+    """人工向队列下发打招呼或收藏动作"""
+    if req.action_type not in ["greet", "collect"]:
+         raise HTTPException(status_code=400, detail="Invalid action_type")
+    database.add_manual_action(req.resume_id, req.action_type)
+    return {"code": 0, "msg": "Action queued"}
 
 def get_zhipu_key():
     try:
@@ -462,25 +566,27 @@ def browser_post(page, url, data, job_id):
     """
     return page.evaluate(script)
 
-# --- 主程序 ---
+# --- Playwright 后台 Worker ---
 
-def main():
+# 全局变量以允许 API 触发同步
+_worker_sync_flag = threading.Event()
+
+def trigger_worker_sync():
+    _worker_sync_flag.set()
+
+def playwright_worker_loop():
     # --- 加载配置以获取默认岗位 ---
     if not os.path.exists("config.json"):
-        print("错误: 找不到 config.json 配置文件")
-        return
+        err_msg = "错误: 找不到 config.json 配置文件！请复制 config.example.json 并填入 ZHIPU_API_KEY。"
+        print(f"\n[!!!] {err_msg}\n")
+        raise RuntimeError(err_msg)
 
     with open("config.json", "r", encoding="utf-8") as f:
         config = json.load(f)
 
-    default_job_from_config = config.get("default_job", "售后工程师")
-
-    parser = argparse.ArgumentParser(description='BOSS直聘 WAPI 自动化助手')
-    parser.add_argument('--mode', type=str, default="rec", choices=['rec', 'new'], help='rec:推荐列表, new:最新列表')
-    args = parser.parse_args()
-
-    # 移除过时的硬编码配置校验，改为动态获取
+    # 后台 Worker 移除 argparse 解析，使用固定默认值或由配置/数据库控制
     job_config = {}
+    mode = "rec"
 
     detail_api_base = config["boss_api_resume_detail"]
     add_api_url = config.get("boss_api_resume_add") # 从配置读取收藏接口
@@ -515,17 +621,25 @@ def main():
         # ==================== 【新增：人工干预引导逻辑】 ====================
         print("\n" + "="*55)
         print("【人工登录确认阶段】")
-        print("1. 请在弹出的 Chrome 浏览器中手动完成登录。")
-        print("2. 确认已进入 BOSS 首页且能看到职位/推荐列表。")
-        print("3. 准备就绪后，请回到此黑窗口，按【任意键】正式启动 AI 引擎。")
+        print("1. 正在启动连接，请在弹出的 Chrome 浏览器中确认已登录 BOSS 直聘。")
+        print("2. 如果未登录，请尽快扫码登录并进入主页。")
+        print("3. AI 引擎将进行第一次同步拉取，完成后自动调起前端 UI。")
         print("="*55 + "\n")
 
-        if msvcrt:
-            msvcrt.getch() # 等待用户按键
-        else:
-            input("请按回车键继续...")
+        # 为了给用户留点时间扫码（如果需要的话），这里稍作停顿但不再死锁。
+        # 更好的体验是如果拉取失败(被重定向到登录页)，在这里重试几次。
+        time.sleep(5)
 
-        print("\n>>> 指令已收到，AI 招聘引擎正在全速启动...\n")
+        print("\n>>> 开始进行初始化同步...\n")
+        # 第一次同步，确保 UI 上有数据
+        online_jobs_cache = sync_online_jobs_to_db(page)
+
+        print(">>> 启动前端 Web UI 控制台...")
+        import webbrowser
+        try:
+             webbrowser.open("http://localhost:8000/ui/index.html")
+        except Exception:
+             print(">>> 请手动在浏览器中访问： http://localhost:8000/ui/index.html")
         # ===================================================================
 
         ctrl = RuntimeControl()
@@ -536,9 +650,16 @@ def main():
         # 外层无限循环
         while True:
             ctrl.wait_if_paused()
+
+            # API 触发或者定期同步
+            if _worker_sync_flag.is_set():
+                print("\n>>> 收到 UI 请求，同步线上职位...")
+                online_jobs_cache = sync_online_jobs_to_db(page)
+                _worker_sync_flag.clear()
+
             print(f"\n{'='*20} 开始新一轮环境同步与任务检测 {'='*20}")
 
-            # 第一步：同步线上职位，确保 UI 有最新数据可选
+            # 默认也按大周期定期同步一次
             online_jobs_cache = sync_online_jobs_to_db(page)
 
             # 第二步：从数据库读取用户最近校准的画像和目标岗位
@@ -571,7 +692,7 @@ def main():
                 sleep_interruptible(ctrl, 15)
                 continue
 
-            print(f"✅ 准备就绪: 将为 {job_name} (ID: {job_id}) 扫描简历。模式: {'推荐' if args.mode=='rec' else '最新'}")
+            print(f"✅ 准备就绪: 将为 {job_name} (ID: {job_id}) 扫描简历。模式: {'推荐' if mode=='rec' else '最新'}")
 
             # --- 消费手动队列 ---
             try:
@@ -603,7 +724,7 @@ def main():
                 print(f"\n--- 正在处理第 {page_num}/50 页 ---")
 
                 # 构建列表请求 URL
-                if args.mode == "rec":
+                if mode == "rec":
                     list_url = f"https://www.zhipin.com/wapi/zpjob/rec/geek/list?age=16,-1&gender=0&activation=0&recentNotView=0&keyword1=-1&major=0&recentNotView=2301&exchangeResumeWithColleague=0&school=0&switchJobFrequency=0&degree=0&experience=0&intention=0&salary=0&jobId={job_id}&page={page_num}&coverScreenMemory=0&cardType=0"
                 else:
                     list_url = f"https://www.zhipin.com/wapi/zprelation/interaction/bossGetGeek?age=16,-1&gender=0&activation=0&recentNotView=0&keyword1=-1&major=0&recentNotView=2301&exchangeResumeWithColleague=0&school=0&switchJobFrequency=0&degree=0&experience=0&intention=0&salary=0&jobid={job_id}&page={page_num}&tag=1&status=1&coverScreenMemory=0"
@@ -724,4 +845,6 @@ def main():
             sleep_interruptible(ctrl, 60)
 
 if __name__ == "__main__":
-    main()
+    import uvicorn
+    # 为了方便测试，如果直接运行 python webBossAI.py，则启动 FastAPI
+    uvicorn.run("webBossAI:app", host="0.0.0.0", port=8000, reload=False)
