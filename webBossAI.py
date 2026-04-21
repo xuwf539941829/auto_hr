@@ -623,14 +623,15 @@ def playwright_worker_loop():
         print("【人工登录确认阶段】")
         print("1. 正在启动连接，请在弹出的 Chrome 浏览器中确认已登录 BOSS 直聘。")
         print("2. 如果未登录，请尽快扫码登录并进入主页。")
-        print("3. AI 引擎将进行第一次同步拉取，完成后自动调起前端 UI。")
+        print("3. 准备就绪后，请回到此黑窗口，按【任意键】正式启动 AI 引擎。")
         print("="*55 + "\n")
 
-        # 为了给用户留点时间扫码（如果需要的话），这里稍作停顿但不再死锁。
-        # 更好的体验是如果拉取失败(被重定向到登录页)，在这里重试几次。
-        time.sleep(5)
+        if msvcrt:
+            msvcrt.getch() # 等待用户按键
+        else:
+            input("请按回车键继续...")
 
-        print("\n>>> 开始进行初始化同步...\n")
+        print("\n>>> 指令已收到，开始进行初始化同步...\n")
         # 第一次同步，确保 UI 上有数据
         online_jobs_cache = sync_online_jobs_to_db(page)
 
