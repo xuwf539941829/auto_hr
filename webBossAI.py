@@ -35,7 +35,7 @@ except ImportError:
     sys.exit(1)
 
 # API 配置 (智谱AI)
-ZHIPU_API_KEY = "c1755aea8b864c31b5979c024e16aa85.rifwbYsklSUElGeD"
+ZHIPU_API_KEY = os.environ.get("ZHIPU_API_KEY", "")
 ZHIPU_API_URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
 
 # 全局公司行业缓存

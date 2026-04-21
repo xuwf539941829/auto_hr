@@ -27,8 +27,14 @@ if st.button("AI 深度转译 (生成画像初稿)"):
     st.info("正在调用 AI 分析 JD...")
     import requests
     import re
-    # 必须使用与 webBossAI 相同的 API 参数和 Key
-    ZHIPU_API_KEY = "c1755aea8b864c31b5979c024e16aa85.rifwbYsklSUElGeD"
+    import os
+
+    # 从环境变量中读取 ZHIPU_API_KEY，避免硬编码泄露风险
+    ZHIPU_API_KEY = os.environ.get("ZHIPU_API_KEY", "")
+    if not ZHIPU_API_KEY:
+        st.error("未配置 ZHIPU_API_KEY 环境变量，请在运行环境中设置。")
+        st.stop()
+
     ZHIPU_API_URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
 
     prompt = f"""
