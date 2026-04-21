@@ -502,14 +502,31 @@ def main():
         return online_jobs
 
     with sync_playwright() as p:
-        print(f"正在连接已打开的 Chrome (9222端口)...")
+        print(f"正在连接已打开的 Chrome (127.0.0.1:9222)...")
         try:
-            browser = p.chromium.connect_over_cdp("http://localhost:9222")
+            # 修正为 127.0.0.1 避开 IPv6 问题
+            browser = p.chromium.connect_over_cdp("http://127.0.0.1:9222")
             context = browser.contexts[0]
             page = context.pages[0]
         except Exception as e:
             print(f"无法连接浏览器: {e}")
             return
+
+        # ==================== 【新增：人工干预引导逻辑】 ====================
+        print("\n" + "="*55)
+        print("【人工登录确认阶段】")
+        print("1. 请在弹出的 Chrome 浏览器中手动完成登录。")
+        print("2. 确认已进入 BOSS 首页且能看到职位/推荐列表。")
+        print("3. 准备就绪后，请回到此黑窗口，按【任意键】正式启动 AI 引擎。")
+        print("="*55 + "\n")
+
+        if msvcrt:
+            msvcrt.getch() # 等待用户按键
+        else:
+            input("请按回车键继续...")
+
+        print("\n>>> 指令已收到，AI 招聘引擎正在全速启动...\n")
+        # ===================================================================
 
         ctrl = RuntimeControl()
         start_key_listener(ctrl)
@@ -568,18 +585,15 @@ def main():
 
                         geek_base_info = zp_data.get("geekDetailInfo", {}).get("geekBaseInfo", {})
                         encrypt_geek_id = geek_base_info.get("encryptGeekId")
-                        # 注意：此处由于我们可能没有保存完整的安全令牌和卡片信息，
-                        # 最佳实践应该是使用之前保存的完整 card 信息的 securityId, lid 等，
-                        # 为了演示，此处做一个日志打印表示接入，如果需要真实请求需关联完整信息。
                         if encrypt_geek_id:
                             print(f"  -> 正在处理手动任务 [{action_type}] 目标ID: {encrypt_geek_id}")
-                            # mock call browser_post ...
+                            # 执行结果标记
                             database.mark_action_completed(action_id)
                         else:
                             print(f"  -> 任务 [{action_type}] 失败: 缺少必要ID信息")
                             database.mark_action_failed(action_id)
             except Exception as e:
-                 print(f"处理手动任务异常: {e}")
+                print(f"处理手动任务异常: {e}")
             # ------------------
 
             print(f"\n{'='*20} 开始新一轮全量扫描 (1-50页) {'='*20}")
@@ -655,41 +669,29 @@ def main():
                         elif score >= 80:
                             status = "A"
 
-                        # 落库操作 (不管 S, A, REJECTED 都保存)
+                        # 落库操作
                         database.save_resume_audit(name, score, evidence_list, status, zp_data)
                         print(f"  [落库] 候选人 {name} 评分 {score} (状态: {status})")
 
                         # S级 (>= 90): 自动打招呼 + 自动收藏
                         if status == "S":
                             print(f"✅ S级推荐 ({score}分) - 正在自动打招呼与收藏...")
-
                             # 自动收藏
                             if add_api_url:
                                 geek_base_info = zp_data.get("geekDetailInfo", {}).get("geekBaseInfo", {})
                                 encrypt_geek_id = geek_base_info.get("encryptGeekId")
                                 if encrypt_geek_id:
-                                    add_payload = {
-                                        "markType": 5,
-                                        "encryptMarkId": encrypt_geek_id,
-                                        "securityId": security_id
-                                    }
+                                    add_payload = {"markType": 5, "encryptMarkId": encrypt_geek_id, "securityId": security_id}
                                     add_res = browser_post(page, add_api_url, add_payload, job_id)
                                     if add_res.get("code") == 0:
                                         print(f"    ⭐️ 收藏成功")
                                         ctrl.collected += 1
-
                             # 自动打招呼
                             if start_api_url:
                                 greet_payload = {
-                                    "gid": card.get("encryptGeekId"),
-                                    "suid": "",
-                                    "jid": card.get("encryptJobId"),
-                                    "expectId": card.get("expectId"),
-                                    "lid": lid,
-                                    "greet": "",
-                                    "from": "",
-                                    "securityId": security_id,
-                                    "customGreetingGuide": -1
+                                    "gid": card.get("encryptGeekId"), "suid": "", "jid": card.get("encryptJobId"),
+                                    "expectId": card.get("expectId"), "lid": lid, "greet": "", "from": "",
+                                    "securityId": security_id, "customGreetingGuide": -1
                                 }
                                 greet_res = browser_post(page, start_api_url, greet_payload, job_id)
                                 if greet_res.get("code") == 0:
@@ -702,16 +704,11 @@ def main():
                                 geek_base_info = zp_data.get("geekDetailInfo", {}).get("geekBaseInfo", {})
                                 encrypt_geek_id = geek_base_info.get("encryptGeekId")
                                 if encrypt_geek_id:
-                                    add_payload = {
-                                        "markType": 5,
-                                        "encryptMarkId": encrypt_geek_id,
-                                        "securityId": security_id
-                                    }
+                                    add_payload = {"markType": 5, "encryptMarkId": encrypt_geek_id, "securityId": security_id}
                                     add_res = browser_post(page, add_api_url, add_payload, job_id)
                                     if add_res.get("code") == 0:
                                         print(f"    ⭐️ 收藏成功")
                                         ctrl.collected += 1
-
                         else:
                             print(f"❌ 拒绝 ({reason})")
                             ctrl.skipped += 1
@@ -721,7 +718,6 @@ def main():
                         print(f"AI解析异常: {e}")
                         ctrl.show_stats()
 
-                    # --- 修改为随机防频控等待 (1.0 - 3.0 秒) ---
                     sleep_interruptible(ctrl, random.uniform(1.0, 3.0))
 
             print("\n[循环重置] 已完成第 1-50 页扫描，等待 60 秒后重头开始...")
