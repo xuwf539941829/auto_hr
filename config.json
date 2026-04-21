@@ -1,0 +1,9 @@
+{
+    "platform": "boss",
+    "zhaopin_url": "",
+    "boss_url": "https://www.zhipin.com/web/chat/recommend",
+    "boss_api_resume_list":"https://www.zhipin.com/wapi/zpjob/rec/geek/list?age=16,-1&gender=0&activation=0&recentNotView=0&keyword1=-1&major=0&exchangeResumeWithColleague=0&school=0&switchJobFrequency=0&degree=0&experience=0&intention=0&salary=0&page=1&coverScreenMemory=0&cardType=0",
+    "boss_api_resume_detail":"https://www.zhipin.com/wapi/zpjob/view/geek/info" ,
+    "boss_api_resume_add": "https://www.zhipin.com/wapi/zprelation/userMark/add",
+    "boss_api_resume_start": "https://www.zhipin.com/wapi/zpjob/chat/start"
+}
