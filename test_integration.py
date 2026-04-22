@@ -41,4 +41,11 @@ if response.status_code == 200 and response.json().get("code") == 0:
 else:
     print("❌ /api/action 返回异常")
 
+print("5. 测试 POST /api/start_scan ...")
+response = client.post("/api/start_scan", json={"job_name": "FastAPI_Job"})
+if response.status_code == 200 and response.json().get("code") == 0:
+    print("✅ /api/start_scan 控制状态机正常下发指令")
+else:
+    print("❌ /api/start_scan 返回异常")
+
 print("测试完成。")
