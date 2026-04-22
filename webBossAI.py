@@ -4,7 +4,7 @@ BOSS直聘招聘助手 - API 驱动版 v2.1 (无限循环版)
 核心逻辑：通过 Playwright 连接 Chrome，在浏览器上下文执行 fetch 请求 WAPI 接口。
 功能：支持推荐/最新列表切换、自动翻页（1-50页循环）、AI 深度筛选、自动解析详情、自动收藏及打招呼。
 """
-
+import ctypes
 import json
 import os
 import sys
@@ -637,14 +637,27 @@ def playwright_worker_loop():
 
     with sync_playwright() as p:
         print(f"正在连接已打开的 Chrome (127.0.0.1:9222)...")
-        try:
-            # 修正为 127.0.0.1 避开 IPv6 问题
-            browser = p.chromium.connect_over_cdp("http://127.0.0.1:9222")
-            context = browser.contexts[0]
-            page = context.pages[0]
-        except Exception as e:
-            print(f"无法连接浏览器: {e}")
-            return
+        while True:
+            print("正在尝试连接 Chrome (127.0.0.1:9222)...")
+            try:
+                # 【核心修复】：手动换取房卡，不再依赖 Playwright 自动转换 http 地址
+                try:
+                    # 注意：这里直接使用纯字符串地址，没有任何 Markdown 干扰
+                    api_url = "http://127.0.0.1:9222/json/version"
+                    v_res = requests.get(api_url, timeout=3).json()
+                    ws_url = v_res.get("webSocketDebuggerUrl")
+                    print(f"✅ 成功获取 WS 调试地址")
+                except Exception as e:
+                    ws_url = "http://127.0.0.1:9222"
+                    print(f"⚠️ 无法自动解析地址，退回原始模式: {e}")
+
+                browser = p.chromium.connect_over_cdp(ws_url)
+                context = browser.contexts[0]
+                page = context.pages[0] if context.pages else context.new_page()
+                print("✅ 浏览器连接成功。")
+                break
+            except Exception as e:
+                print(f"❌ 浏览器连接失败: {e}。10秒后重试..."); time.sleep(10); continue
 
         # ==================== 【新增：人工干预引导逻辑】 ====================
         print("\n" + "="*55)
@@ -654,10 +667,7 @@ def playwright_worker_loop():
         print("3. 准备就绪后，请回到此黑窗口，按【任意键】正式启动 AI 引擎。")
         print("="*55 + "\n")
 
-        if msvcrt:
-            msvcrt.getch() # 等待用户按键
-        else:
-            input("请按回车键继续...")
+        input(">>> 请在此处输入回车 (Enter) 继续：")
 
         print("\n>>> 指令已收到，开始进行初始化同步...\n")
         # 第一次同步，确保 UI 上有数据
