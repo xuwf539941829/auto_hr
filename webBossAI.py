@@ -596,11 +596,25 @@ def browser_post(page, url, data, job_id):
 
 # --- Playwright 后台 Worker ---
 
-# 全局变量以允许 API 触发同步
+# 全局变量以允许 API 触发同步及控制自动化扫描启动
 _worker_sync_flag = threading.Event()
+_worker_scan_flag = threading.Event()  # 初始化为 False，挂起扫描
 
 def trigger_worker_sync():
     _worker_sync_flag.set()
+
+class ScanStartRequest(BaseModel):
+    job_name: str
+
+@app.post("/api/start_scan")
+def api_start_scan(req: ScanStartRequest):
+    """人工确认画像无误，下发启动简历扫描的指令"""
+    if not req.job_name:
+        raise HTTPException(status_code=400, detail="Missing job_name")
+
+    # 唤醒挂起的 Worker
+    _worker_scan_flag.set()
+    return {"code": 0, "msg": f"Scan explicitly started for {req.job_name}"}
 
 def playwright_worker_loop():
     # --- 加载配置以获取默认岗位 ---
@@ -700,6 +714,12 @@ def playwright_worker_loop():
 
             # 默认也按大周期定期同步一次
             online_jobs_cache = sync_online_jobs_to_db(page)
+
+            # 如果尚未被前端显式启动过扫描，则保持静默挂起
+            if not _worker_scan_flag.is_set():
+                print("⏳ 扫描流程处于挂起状态。请在 Web UI 完成【阶段 1】和【阶段 2】，并点击“确认并开始筛选简历”。等待中...")
+                sleep_interruptible(ctrl, 15)
+                continue
 
             # 第二步：从数据库读取用户最近校准的画像和目标岗位
             conn = database.get_connection()
