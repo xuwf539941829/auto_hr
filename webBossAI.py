@@ -599,6 +599,7 @@ def browser_post(page, url, data, job_id):
 # 全局变量以允许 API 触发同步及控制自动化扫描启动
 _worker_sync_flag = threading.Event()
 _worker_scan_flag = threading.Event()  # 初始化为 False，挂起扫描
+_current_scan_job_name = None  # 记录当前前端确认开跑的目标职位名称
 
 def trigger_worker_sync():
     _worker_sync_flag.set()
@@ -609,9 +610,11 @@ class ScanStartRequest(BaseModel):
 @app.post("/api/start_scan")
 def api_start_scan(req: ScanStartRequest):
     """人工确认画像无误，下发启动简历扫描的指令"""
+    global _current_scan_job_name
     if not req.job_name:
         raise HTTPException(status_code=400, detail="Missing job_name")
 
+    _current_scan_job_name = req.job_name
     # 唤醒挂起的 Worker
     _worker_scan_flag.set()
     return {"code": 0, "msg": f"Scan explicitly started for {req.job_name}"}
@@ -721,22 +724,23 @@ def playwright_worker_loop():
                 sleep_interruptible(ctrl, 15)
                 continue
 
-            # 第二步：从数据库读取用户最近校准的画像和目标岗位
+            # 第二步：从数据库根据用户【本次下发指令选定的岗位名称】读取画像
+            global _current_scan_job_name
+            job_name = _current_scan_job_name
+
             conn = database.get_connection()
             cursor = conn.cursor()
-            cursor.execute('SELECT job_name, profile_json FROM JobProfile ORDER BY updated_at DESC LIMIT 1')
+            cursor.execute('SELECT profile_json FROM JobProfile WHERE job_name = ? ORDER BY updated_at DESC LIMIT 1', (job_name,))
             row = cursor.fetchone()
             conn.close()
 
             if not row:
-                print("⚠️ 数据库中尚未发现岗位画像。请先在 Web UI 页面选择岗位并进行第一步的 JD 解析。")
-                print("⏳ 等待 15 秒后重试...")
+                print(f"⚠️ 扫描已被启动，但数据库中未找到岗位 [{job_name}] 的画像配置。请先在前端完善 JD 翻译。等待 15 秒后重试...")
                 sleep_interruptible(ctrl, 15)
                 continue
 
-            job_name = row[0]
-            latest_profile = json.loads(row[1])
-            print(f"[任务获取] 读取到最新绑定岗位: {job_name}，已加载其画像标准。")
+            latest_profile = json.loads(row[0])
+            print(f"[任务获取] 成功读取到用户指定的绑定岗位: {job_name} 的最新画像标准。")
 
             # 第三步：利用 job_name 从刚才的在线列表中寻找 job_id
             job_id = None
