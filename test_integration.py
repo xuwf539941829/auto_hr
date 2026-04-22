@@ -45,6 +45,13 @@ print("5. 测试 POST /api/start_scan ...")
 response = client.post("/api/start_scan", json={"job_name": "FastAPI_Job"})
 if response.status_code == 200 and response.json().get("code") == 0:
     print("✅ /api/start_scan 控制状态机正常下发指令")
+
+    # 验证是否能够根据传入的名称加载画像
+    import webBossAI
+    if webBossAI._current_scan_job_name == "FastAPI_Job":
+        print("✅ 后台状态机成功锁定前端选定的职位")
+    else:
+        print("❌ 后台状态机未能锁定职位")
 else:
     print("❌ /api/start_scan 返回异常")
 
