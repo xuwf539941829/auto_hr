@@ -70,6 +70,69 @@ class ProfileRequest(BaseModel):
     job_name: str
     jd_text: str
 
+class MergeResumeRequest(BaseModel):
+    job_name: str
+    resume_text: str
+
+@app.post("/api/merge_resume")
+def api_merge_resume(req: MergeResumeRequest):
+    """调用大模型，提取理想简历的特征并将其融入已有的岗位画像标准中"""
+    if not req.job_name or not req.resume_text:
+        raise HTTPException(status_code=400, detail="Missing job_name or resume_text")
+
+    current_profile = database.get_latest_job_profile(req.job_name)
+    if not current_profile:
+        raise HTTPException(status_code=404, detail="Current profile not found. Please generate the profile from JD first.")
+
+    prompt = f"""
+    你是一名顶级招聘专家。我们已经针对“{req.job_name}”岗位构建了一份基础的胜任力与画像标准（如下所示）。
+    现在，业务部门提供了一份他们认为“最完美”的标杆候选人的真实简历（如下所示）。
+
+    你的任务是：
+    1. 仔细阅读这份“标杆简历”，从中提取出能够体现其优秀的、且尚未包含在原画像标准中的独特特质、经验、或可量化的关键指标。
+    2. 将这些新提取的优秀特征**融入**到原来的 JSON 画像标准中。
+       - 例如：补充到“隐性能力挖掘”列表中；
+       - 例如：在“多维评估框架”的正向指标里增加新的判定条件。
+    3. 输出**完全合并更新后**的 JSON 数据结构，格式必须与原画像严格保持一致。
+
+    ---
+    【原画像标准】：
+    {json.dumps(current_profile, ensure_ascii=False, indent=2)}
+
+    ---
+    【标杆候选人简历】：
+    {req.resume_text}
+
+    ---
+    请直接输出合并更新后的 JSON，确保它能被 json.loads 解析，不要有 ```json 等代码块包裹，不要有废话解释。
+    """
+
+    headers = {
+        "Authorization": f"Bearer {ZHIPU_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    data = {
+        "model": "glm-4-flash",
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.2
+    }
+
+    try:
+        response = requests.post(ZHIPU_API_URL, headers=headers, json=data, timeout=20)
+        if response.status_code == 200:
+            content = response.json()["choices"][0]["message"]["content"]
+            json_match = re.search(r'\{.*\}', content, re.S)
+            if json_match:
+                ai_result = json.loads(json_match.group())
+                database.save_job_profile(req.job_name, ai_result)
+                return {"code": 0, "data": ai_result}
+            else:
+                raise HTTPException(status_code=500, detail="AI JSON Parsing failed")
+        else:
+            raise HTTPException(status_code=500, detail=f"AI API failed with {response.status_code}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/api/profile")
 def api_generate_profile(req: ProfileRequest):
     """调用大模型转译 JD 并保存到数据库"""

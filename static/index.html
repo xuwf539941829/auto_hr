@@ -51,12 +51,28 @@
         <div id="profileResult" class="mt-4 p-4 bg-gray-50 rounded hidden overflow-auto max-h-64 text-sm">
             <!-- 画像 JSON 将展示在这里 -->
         </div>
+    </div>
 
-        <button id="btnStartScan" class="w-full bg-purple-500 hover:bg-purple-600 text-white px-4 py-3 rounded font-medium text-lg mt-4 hidden">
+    <!-- 阶段 3：理想简历融合 -->
+    <div id="stage3Container" class="bg-white p-6 rounded-lg shadow-md mb-8 hidden">
+        <h2 class="text-xl font-semibold mb-4 text-blue-600">阶段 3：上传理想简历特征融合 (可选)</h2>
+        <p class="text-sm text-gray-500 mb-4">
+            说明：如果您觉得光靠 JD 找不准人，可以把您认为“最完美”的标杆候选人的简历直接粘贴在这里。AI 会自动提取这名牛人身上的特质，并将其融入到上方刚生成的画像标准中。
+        </p>
+        <textarea id="idealResumeInput" rows="5" class="w-full border p-3 rounded mb-4 focus:outline-none focus:border-blue-500" placeholder="请粘贴标杆候选人的简历文本..."></textarea>
+
+        <button id="btnMergeResume" class="w-full bg-yellow-500 hover:bg-yellow-600 text-white px-4 py-3 rounded font-medium text-lg mb-4">
+            AI 提取简历特征并融合进画像
+        </button>
+
+        <div class="border-t border-gray-200 my-4 pt-4"></div>
+        <p class="text-center text-gray-600 font-medium mb-4">如果画像确认无误，即可下发执行：</p>
+        <button id="btnStartScan" class="w-full bg-purple-500 hover:bg-purple-600 text-white px-4 py-3 rounded font-medium text-lg">
             确认画像标准，立即开始自动化简历筛选！
         </button>
     </div>
-    <!-- 阶段 3 & 4：简历墙 -->
+
+    <!-- 阶段 4：简历墙 -->
     <div class="bg-white p-6 rounded-lg shadow-md">
         <div class="flex justify-between items-center mb-4">
             <h2 class="text-xl font-semibold text-blue-600">阶段 3 & 4：简历池与证据审计墙</h2>
@@ -245,9 +261,9 @@
                 const resDiv = document.getElementById('profileResult');
                 resDiv.classList.remove('hidden');
                 resDiv.innerHTML = '<pre>' + JSON.stringify(data.data, null, 2) + '</pre>';
-                alert('画像已生成，请检阅下方结果。确认无误后点击“确认并开始筛选简历”。');
-                // 开启确认启动的按钮
-                document.getElementById('btnStartScan').classList.remove('hidden');
+                alert('画像初稿已生成，请检阅结果。您可以选择在下方直接开始扫描，或者继续上传一份理想简历让 AI 融合特征。');
+                // 开启阶段 3 (融合简历与启动扫描)
+                document.getElementById('stage3Container').classList.remove('hidden');
             } else {
                 alert('生成失败: ' + (data.detail || data.msg));
             }
@@ -255,6 +271,41 @@
             alert('请求发生错误');
         }
         btn.innerText = "AI 深度转译 (生成画像初稿)";
+        btn.disabled = false;
+    });
+
+    // 触发简历融合
+    document.getElementById('btnMergeResume').addEventListener('click', async () => {
+        const jobName = document.getElementById('jobSelect').value;
+        const resumeText = document.getElementById('idealResumeInput').value;
+
+        if (!resumeText) {
+            alert('请粘贴理想候选人的简历文本！');
+            return;
+        }
+
+        const btn = document.getElementById('btnMergeResume');
+        btn.innerText = "正在分析标杆简历并融合画像中...";
+        btn.disabled = true;
+
+        try {
+            const res = await fetch('/api/merge_resume', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ job_name: jobName, resume_text: resumeText })
+            });
+            const data = await res.json();
+            if (data.code === 0) {
+                const resDiv = document.getElementById('profileResult');
+                resDiv.innerHTML = '<pre>' + JSON.stringify(data.data, null, 2) + '</pre>';
+                alert('特征融合成功！画像标准已自动更新，请复核最终结果。');
+            } else {
+                alert('融合失败: ' + (data.detail || data.msg));
+            }
+        } catch (e) {
+            alert('网络请求发生错误');
+        }
+        btn.innerText = "AI 提取简历特征并融合进画像";
         btn.disabled = false;
     });
 

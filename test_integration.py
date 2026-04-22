@@ -41,7 +41,19 @@ if response.status_code == 200 and response.json().get("code") == 0:
 else:
     print("❌ /api/action 返回异常")
 
-print("5. 测试 POST /api/start_scan ...")
+print("5. 测试 POST /api/merge_resume ...")
+# 需要预先有一个画像，我们先调用 profile 创建一个 mock 或者前面步骤可能已经创建了
+database.save_job_profile("FastAPI_Job", {"隐性能力挖掘": ["大客户攻坚"]})
+merge_res = client.post("/api/merge_resume", json={
+    "job_name": "FastAPI_Job",
+    "resume_text": "我在上家公司主要负责海外市场的设备渠道建设，一年内发展了20家代理商。"
+})
+if merge_res.status_code == 200 and merge_res.json().get("code") == 0:
+    print("✅ /api/merge_resume 返回正常")
+else:
+    print("❌ /api/merge_resume 返回异常")
+
+print("6. 测试 POST /api/start_scan ...")
 response = client.post("/api/start_scan", json={"job_name": "FastAPI_Job"})
 if response.status_code == 200 and response.json().get("code") == 0:
     print("✅ /api/start_scan 控制状态机正常下发指令")
